@@ -36,6 +36,26 @@ def conv_block(inp, cweight, bweight, reuse, scope, activation=tf.nn.relu, max_p
         normed = tf.nn.max_pool(normed, stride, stride, max_pool_pad)
     return normed
 
+def sa_block(inp, cweight, bweight):
+    """Perform spatial attention block"""
+    # mask = tf.keras.layers.Conv2D(inp, 1, (3, 3), padding='same', activation='sigmoid', use_bias=False, kernel_initializer='he_normal')(inp)
+    mask = tf.nn.conv2d(inp, cweight, [1,1,1,1], 'SAME') + bweight
+    mask = tf.nn.sigmoid(mask)
+    concatted = tf.concat([mask]*3, axis=3)
+    return tf.keras.layers.multiply([inp, concatted])
+
+def ca_block(inp, cweight, bweight):
+    """Perform channel-wise attention block"""
+    # channel_features = tf.keras.layers.GlobalMaxPooling2D()(inp)
+    channel_features = inp
+    # filters = channel_features.shape[-1]
+    # channel_features = tf.keras.layers.Dense(filters // ratio, activation='relu', kernel_initializer='he_normal', use_bias=False)(channel_features)
+    # channel_features = tf.keras.layers.Dense(filters, activation='sigmoid', kernel_initializer='he_normal', use_bias=False)(channel_features)
+    channel_features = tf.matmul(channel_features, cweight[0]) + bweight[0]
+    channel_features = tf.matmul(channel_features, cweight[1]) + bweight[1]
+    # channel_features = tf.keras.layers.Reshape((1, 1, filters))(channel_features)
+    return tf.keras.layers.multiply([inp, channel_features])
+
 def normalize(inp, activation, reuse, scope):
     if FLAGS.norm == 'batch_norm':
         return tf_layers.batch_norm(inp, activation_fn=activation, reuse=reuse, scope=scope)

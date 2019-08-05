@@ -36,34 +36,35 @@ from maml import MAML
 from tensorflow.python.platform import flags
 
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
 FLAGS = flags.FLAGS
 
 ## Dataset/method options
-flags.DEFINE_string('datasource', 'anomaly', 'sinusoid or omniglot or miniimagenet or anomaly')
-flags.DEFINE_integer('num_classes', 6, 'number of classes used in classification (e.g. 5-way classification).')
+flags.DEFINE_string('datasource', 'anomaly64', 'sinusoid or omniglot or miniimagenet or anomaly')
+flags.DEFINE_integer('num_classes', 5, 'number of classes used in classification (e.g. 5-way classification).')
+flags.DEFINE_integer('test_seed', 1, 'for consistency in initializing the val/test split')
 # oracle means task id is input (only suitable for sinusoid)
 flags.DEFINE_string('baseline', None, 'oracle, or None')
 
 ## Training options
 flags.DEFINE_integer('pretrain_iterations', 0, 'number of pre-training iterations. only suitable for sinusoid')
 flags.DEFINE_integer('metatrain_iterations', 60000, 'number of metatraining iterations.') # 15k for omniglot, 50k for sinusoid
-flags.DEFINE_integer('meta_batch_size', 2, 'number of tasks sampled per meta-update')
+flags.DEFINE_integer('meta_batch_size', 4, 'number of tasks sampled per meta-update')
 flags.DEFINE_float('meta_lr', 0.001, 'the base learning rate of the generator')
 flags.DEFINE_integer('update_batch_size', 1, 'number of examples used for inner gradient update (K for K-shot learning).')
-flags.DEFINE_float('update_lr', 1e-2, 'step size alpha for inner gradient update.') # 0.1 for omniglot
+flags.DEFINE_float('update_lr', 0.01, 'step size alpha for inner gradient update.') # 0.1 for omniglot
 flags.DEFINE_integer('num_updates', 5, 'number of inner gradient updates during training.')
 
 ## Model options
 flags.DEFINE_string('norm', 'batch_norm', 'batch_norm, layer_norm, or None')
-flags.DEFINE_integer('num_filters', 32, 'number of filters for conv nets -- 32 for miniimagenet, 64 for omiglot.')
+flags.DEFINE_integer('num_filters', 64, 'number of filters for conv nets -- 32 for miniimagenet, 64 for omiglot.')
 flags.DEFINE_bool('conv', True, 'whether or not to use a convolutional network, only applicable in some cases')
-flags.DEFINE_bool('max_pool', True, 'Whether or not to use max pooling rather than strided convolutions')
+flags.DEFINE_bool('max_pool', False, 'Whether or not to use max pooling rather than strided convolutions')
 flags.DEFINE_bool('stop_grad', False, 'if True, do not use second derivatives in meta-optimization (for speed)')
 
 ## Logging, saving, and testing options
-flags.DEFINE_bool('log', True, 'if false, do not log summaries, for debugging code.')
+flags.DEFINE_bool('log', False, 'if false, do not log summaries, for debugging code.')
 flags.DEFINE_string('logdir', 'logs/anomaly6way1shot', 'directory for summaries and checkpoints.')
 flags.DEFINE_bool('resume', False, 'resume training if there is a model available')
 flags.DEFINE_bool('train', True, 'True to train, False to test.')
@@ -134,8 +135,8 @@ def train(model, saver, sess, exp_string, data_generator, resume_itr=0):
             print(print_str)
             prelosses, postlosses = [], []
 
-        if (itr!=0) and itr % SAVE_INTERVAL == 0:
-            saver.save(sess, FLAGS.logdir + '/' + exp_string + '/model' + str(itr))
+        # if (itr!=0) and itr % SAVE_INTERVAL == 0:
+        #     saver.save(sess, FLAGS.logdir + '/' + exp_string + '/model' + str(itr))
 
         # sinusoid is infinite data, so no need to test on meta-validation set.
         if (itr!=0) and itr % TEST_PRINT_INTERVAL == 0 and FLAGS.datasource !='sinusoid':
@@ -163,7 +164,7 @@ def train(model, saver, sess, exp_string, data_generator, resume_itr=0):
     saver.save(sess, FLAGS.logdir + '/' + exp_string +  '/model' + str(itr))
 
 # calculated for omniglot
-NUM_TEST_POINTS = 600
+NUM_TEST_POINTS = 100
 
 def test(model, saver, sess, exp_string, data_generator, test_num_updates=None):
     num_classes = data_generator.num_classes # for classification, 1 otherwise
@@ -223,7 +224,7 @@ def main():
         else:
             test_num_updates = 10
     else:
-        if FLAGS.datasource == 'miniimagenet' or FLAGS.datasource == 'anomaly':
+        if FLAGS.datasource == 'miniimagenet' or 'anomaly' in FLAGS.datasource:
             if FLAGS.train == True:
                 test_num_updates = 1  # eval on at least one update during training
             else:
@@ -244,9 +245,9 @@ def main():
             assert FLAGS.update_batch_size == 1
             data_generator = DataGenerator(1, FLAGS.meta_batch_size)  # only use one datapoint,
         else:
-            if FLAGS.datasource == 'miniimagenet' or FLAGS.datasource == 'anomaly': # TODO - use 15 val examples for imagenet?
+            if FLAGS.datasource == 'miniimagenet' or 'anomaly' in FLAGS.datasource: # TODO - use 15 val examples for imagenet?
                 if FLAGS.train:
-                    data_generator = DataGenerator(FLAGS.update_batch_size+10, FLAGS.meta_batch_size)  # only use one datapoint for testing to save memory
+                    data_generator = DataGenerator(FLAGS.update_batch_size*2, FLAGS.meta_batch_size)  # only use one datapoint for testing to save memory
                 else:
                     data_generator = DataGenerator(FLAGS.update_batch_size*2, FLAGS.meta_batch_size)  # only use one datapoint for testing to save memory
             else:
@@ -262,7 +263,7 @@ def main():
     else:
         dim_input = data_generator.dim_input
 
-    if FLAGS.datasource == 'miniimagenet' or FLAGS.datasource == 'omniglot' or FLAGS.datasource == 'anomaly':
+    if FLAGS.datasource == 'miniimagenet' or FLAGS.datasource == 'omniglot' or 'anomaly' in FLAGS.datasource:
         tf_data_load = True
         num_classes = data_generator.num_classes
 
@@ -306,22 +307,22 @@ def main():
     if FLAGS.train_update_lr == -1:
         FLAGS.train_update_lr = FLAGS.update_lr
 
-    exp_string = 'cls_'+str(FLAGS.num_classes)+'.mbs_'+str(FLAGS.meta_batch_size) + '.ubs_' + str(FLAGS.train_update_batch_size) + '.numstep' + str(FLAGS.num_updates) + '.updatelr' + str(FLAGS.train_update_lr)
+    exp_string = 'cls_'+str(FLAGS.num_classes)+'.mbs_'+str(FLAGS.meta_batch_size) + '.ubs_' + str(FLAGS.train_update_batch_size) + '.numstep' + str(FLAGS.num_updates) + '.updatelr' + str(FLAGS.train_update_lr) + '.seed' + str(FLAGS.test_seed)
 
     if FLAGS.num_filters != 64:
-        exp_string += 'hidden' + str(FLAGS.num_filters)
+        exp_string += '.hidden' + str(FLAGS.num_filters)
     if FLAGS.max_pool:
-        exp_string += 'maxpool'
+        exp_string += '.maxpool'
     if FLAGS.stop_grad:
-        exp_string += 'stopgrad'
+        exp_string += '.stopgrad'
     if FLAGS.baseline:
         exp_string += FLAGS.baseline
     if FLAGS.norm == 'batch_norm':
-        exp_string += 'batchnorm'
+        exp_string += '.batchnorm'
     elif FLAGS.norm == 'layer_norm':
-        exp_string += 'layernorm'
+        exp_string += '.layernorm'
     elif FLAGS.norm == 'None':
-        exp_string += 'nonorm'
+        exp_string += '.nonorm'
     else:
         print('Norm setting not recognized.')
 

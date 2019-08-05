@@ -76,27 +76,49 @@ class DataGenerator(object):
             self.metatrain_character_folders = metatrain_folders
             self.metaval_character_folders = metaval_folders
             self.rotations = config.get('rotations', [0])
-        elif FLAGS.datasource == 'anomaly':
+        elif 'anomaly' in FLAGS.datasource:
             self.num_classes = config.get('num_classes', FLAGS.num_classes)
-            self.img_size = config.get('img_size', (512, 512))
+            self.textures = ['grid', 'leather', 'tile', 'wood']
+            self.img_size = config.get('img_size', [int(FLAGS.datasource[7:])]*2)
             self.dim_input = np.prod(self.img_size)*3
             self.dim_output = self.num_classes
             # data that is pre-resized using PIL with lanczos filter
-            data_folder = config.get('data_folder', './data/anomaly')
-
-            character_folders = [os.path.join(data_folder, family, character) \
-                                 for family in os.listdir(data_folder) \
-                                 if os.path.isdir(os.path.join(data_folder, family)) \
-                                 for character in os.listdir(os.path.join(data_folder, family))]
-            random.seed(1)
-            random.shuffle(character_folders)
-            num_val = 20
-            num_train = config.get('num_train', 60) - num_val
-            self.metatrain_character_folders = character_folders[:num_train]
-            if FLAGS.test_set:
-                self.metaval_character_folders = character_folders[num_train + num_val:]
+            data_folder = config.get('data_folder', './data/'+FLAGS.datasource)
+            if FLAGS.num_classes == 6:
+                self.test_objects = ['capsule', 'screw']
+            elif FLAGS.num_classes == 5:
+                self.test_objects = ['hazelnut', 'transistor']
             else:
-                self.metaval_character_folders = character_folders[num_train:num_train + num_val]
+                raise ValueError('Only consider 5 or 6 way cases for the project!')
+            random.seed(FLAGS.test_seed)
+            val_texture, test_texture = random.sample(self.textures, 2)
+            val_test_set = self.test_objects + [val_texture, test_texture] + ['bottle', 'toothbrush']
+
+            test_object = random.sample(self.test_objects, 1)[0]
+            val_object = list(set(self.test_objects) - set(test_object))[0]
+
+            material_train_folders = [os.path.join(data_folder, material) \
+                                      for material in os.listdir(data_folder) \
+                                      if os.path.isdir(os.path.join(data_folder, material)) \
+                                      and material not in val_test_set]
+            material_val_folders = [os.path.join(data_folder, material) \
+                                    for material in os.listdir(data_folder) \
+                                    if os.path.isdir(os.path.join(data_folder, material)) \
+                                    and material in [val_texture, val_object]]
+            material_test_folders = [os.path.join(data_folder, material) \
+                                     for material in os.listdir(data_folder) \
+                                     if os.path.isdir(os.path.join(data_folder, material)) \
+                                     and material in [test_texture, test_object]]
+            condition_train_folders = [os.path.join(material, condition) \
+                                       for material in material_train_folders \
+                                       for condition in os.listdir(material)]
+
+            # self.metatrain_condition_folders = condition_train_folders
+            self.metatrain_material_folders = material_train_folders
+            if FLAGS.test_set:
+                self.metaval_material_folders = material_test_folders
+            else:
+                self.metaval_material_folders = material_val_folders
             self.rotations = config.get('rotations', [0, 90, 180, 270])
         else:
             raise ValueError('Unrecognized data source')
@@ -105,19 +127,39 @@ class DataGenerator(object):
     def make_data_tensor(self, train=True):
         if train:
             print('Train preprocessing phase...')
-            folders = self.metatrain_character_folders
+            if 'anomaly' in FLAGS.datasource:
+                # folders = self.metatrain_condition_folders
+                folders = self.metatrain_material_folders
+            else:
+                folders = self.metatrain_character_folders
             # number of tasks, not number of meta-iterations. (divide by metabatch size to measure)
-            num_total_batches = 240000
+            num_total_batches = min(FLAGS.meta_batch_size * FLAGS.metatrain_iterations, 200)
         else:
             print('Val preprocessing phase...')
-            folders = self.metaval_character_folders
+            if 'anomaly' in FLAGS.datasource:
+                folders = self.metaval_material_folders
+            else:
+                folders = self.metaval_character_folders
             num_total_batches = 600
 
         # make list of files
         print('Generating filenames')
         all_filenames = []
         for _ in tqdm(range(num_total_batches)):
-            sampled_character_folders = random.sample(folders, self.num_classes)
+            if 'anomaly' in FLAGS.datasource:
+                if train:
+                    material = random.sample(folders, 1)[0]
+                    condition_folders = [os.path.join(material, condition) \
+                                         for condition in os.listdir(material)]
+
+                    sampled_character_folders = random.sample(condition_folders, self.num_classes)
+                else:
+                    material = random.sample(folders, 1)[0]
+                    condition_folders = [os.path.join(material, condition) \
+                                         for condition in os.listdir(material)]
+                    sampled_character_folders = random.sample(condition_folders, self.num_classes)
+            else:
+                sampled_character_folders = random.sample(folders, self.num_classes)
             random.shuffle(sampled_character_folders)
             labels_and_images = get_images(sampled_character_folders, range(self.num_classes), nb_samples=self.num_samples_per_class, shuffle=False)
             # make sure the above isn't randomized order
@@ -126,6 +168,7 @@ class DataGenerator(object):
             all_filenames.extend(filenames)
 
         # make queue for tensorflow to read from
+        print('Enqueuing filenames. It may take a long while.')
         filename_queue = tf.train.string_input_producer(tf.convert_to_tensor(all_filenames), shuffle=False)
         print('Generating image processing ops')
         image_reader = tf.WholeFileReader()
@@ -135,7 +178,7 @@ class DataGenerator(object):
             image.set_shape((self.img_size[0],self.img_size[1],3))
             image = tf.reshape(image, [self.dim_input])
             image = tf.cast(image, tf.float32) / 255.0
-        if FLAGS.datasource == 'anomaly':
+        if 'anomaly' in FLAGS.datasource:
             image = tf.image.decode_png(image_file, channels=3)
             image.set_shape((self.img_size[0],self.img_size[1],3))
             image = tf.reshape(image, [self.dim_input])

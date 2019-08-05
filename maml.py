@@ -10,7 +10,7 @@ except KeyError as e:
           file=sys.stderr)
 
 from tensorflow.python.platform import flags
-from utils import mse, xent, conv_block, normalize
+from utils import *
 
 FLAGS = flags.FLAGS
 
@@ -28,7 +28,7 @@ class MAML:
             self.loss_func = mse
             self.forward = self.forward_fc
             self.construct_weights = self.construct_fc_weights
-        elif FLAGS.datasource == 'omniglot' or FLAGS.datasource == 'miniimagenet' or FLAGS.datasource == 'anomaly':
+        elif FLAGS.datasource == 'omniglot' or FLAGS.datasource == 'miniimagenet' or 'anomaly' in FLAGS.datasource:
             self.loss_func = xent
             self.classification = True
             if FLAGS.conv:
@@ -39,7 +39,7 @@ class MAML:
                 self.dim_hidden = [256, 128, 64, 64]
                 self.forward=self.forward_fc
                 self.construct_weights = self.construct_fc_weights
-            if FLAGS.datasource == 'miniimagenet' or FLAGS.datasource == 'anomaly':
+            if FLAGS.datasource == 'miniimagenet' or 'anomaly' in FLAGS.datasource:
                 self.channels = 3
             else:
                 self.channels = 1
@@ -144,7 +144,7 @@ class MAML:
             if FLAGS.metatrain_iterations > 0:
                 optimizer = tf.train.AdamOptimizer(self.meta_lr)
                 self.gvs = gvs = optimizer.compute_gradients(self.total_losses2[FLAGS.num_updates-1])
-                if FLAGS.datasource == 'miniimagenet' or FLAGS.datasource == 'anomaly':
+                if FLAGS.datasource == 'miniimagenet' or 'anomaly' in FLAGS.datasource:
                     gvs = [(tf.clip_by_value(grad, -10, 10), var) for grad, var in gvs]
                 self.metatrain_op = optimizer.apply_gradients(gvs)
         else:
@@ -188,8 +188,12 @@ class MAML:
         dtype = tf.float32
         conv_initializer =  tf.contrib.layers.xavier_initializer_conv2d(dtype=dtype)
         fc_initializer =  tf.contrib.layers.xavier_initializer(dtype=dtype)
+        sa_initializer = tf.initializers.lecun_normal()
+        ca_initializer = tf.initializers.he_normal()
         k = 3
 
+        # weights['sa1'] = tf.get_variable('sa1', [k, k, self.channels, 1], initializer=sa_initializer, dtype=dtype)
+        # weights['s1'] = tf.Variable(tf.zeros([1]))
         weights['conv1'] = tf.get_variable('conv1', [k, k, self.channels, self.dim_hidden], initializer=conv_initializer, dtype=dtype)
         weights['b1'] = tf.Variable(tf.zeros([self.dim_hidden]))
         weights['conv2'] = tf.get_variable('conv2', [k, k, self.dim_hidden, self.dim_hidden], initializer=conv_initializer, dtype=dtype)
@@ -198,16 +202,20 @@ class MAML:
         weights['b3'] = tf.Variable(tf.zeros([self.dim_hidden]))
         weights['conv4'] = tf.get_variable('conv4', [k, k, self.dim_hidden, self.dim_hidden], initializer=conv_initializer, dtype=dtype)
         weights['b4'] = tf.Variable(tf.zeros([self.dim_hidden]))
-        weights['conv5'] = tf.get_variable('conv5', [k, k, self.dim_hidden, self.dim_hidden], initializer=conv_initializer, dtype=dtype)
-        weights['b5'] = tf.Variable(tf.zeros([self.dim_hidden]))
-        weights['conv6'] = tf.get_variable('conv6', [k, k, self.dim_hidden, self.dim_hidden], initializer=conv_initializer, dtype=dtype)
-        weights['b6'] = tf.Variable(tf.zeros([self.dim_hidden]))
-        weights['conv7'] = tf.get_variable('conv7', [k, k, self.dim_hidden, self.dim_hidden], initializer=conv_initializer, dtype=dtype)
-        weights['b7'] = tf.Variable(tf.zeros([self.dim_hidden]))
-        if FLAGS.datasource == 'miniimagenet' or FLAGS.datasource == 'anomaly':
+        weights['ca_1'] = tf.get_variable('ca_1', [1024, 512], initializer=ca_initializer)
+        weights['c_1'] = tf.Variable(tf.zeros([512]))
+        weights['ca_2'] = tf.get_variable('ca_2', [512, 1024], initializer=ca_initializer)
+        weights['c_2'] = tf.Variable(tf.zeros([1024]))
+        # weights['conv5'] = tf.get_variable('conv5', [k, k, 1024, 512], initializer=conv_initializer, dtype=dtype)
+        # weights['b5'] = tf.Variable(tf.zeros([512]))
+        # weights['conv6'] = tf.get_variable('conv6', [k, k, self.dim_hidden, self.dim_hidden], initializer=conv_initializer, dtype=dtype)
+        # weights['b6'] = tf.Variable(tf.zeros([self.dim_hidden]))
+        # weights['conv7'] = tf.get_variable('conv7', [k, k, self.dim_hidden, self.dim_hidden], initializer=conv_initializer, dtype=dtype)
+        # weights['b7'] = tf.Variable(tf.zeros([self.dim_hidden]))
+        if FLAGS.datasource == 'miniimagenet' or 'anomaly' in FLAGS.datasource:
             # assumes max pooling
-            weights['w8'] = tf.get_variable('w8', [self.dim_hidden*4*4, self.dim_output], initializer=fc_initializer)
-            weights['b8'] = tf.Variable(tf.zeros([self.dim_output]), name='b8')
+            weights['w5'] = tf.get_variable('w5', [self.dim_hidden*16, self.dim_output], initializer=fc_initializer)
+            weights['b5'] = tf.Variable(tf.zeros([self.dim_output]), name='b5')
         else:
             weights['w5'] = tf.Variable(tf.random_normal([self.dim_hidden, self.dim_output]), name='w5')
             weights['b5'] = tf.Variable(tf.zeros([self.dim_output]), name='b5')
@@ -218,19 +226,22 @@ class MAML:
         channels = self.channels
         inp = tf.reshape(inp, [-1, self.img_size, self.img_size, channels])
 
+        # sa_output1 = sa_block(inp, weights['sa1'], weights['s1'])
         hidden1 = conv_block(inp, weights['conv1'], weights['b1'], reuse, scope+'0')
         hidden2 = conv_block(hidden1, weights['conv2'], weights['b2'], reuse, scope + '1')
         hidden3 = conv_block(hidden2, weights['conv3'], weights['b3'], reuse, scope + '2')
         hidden4 = conv_block(hidden3, weights['conv4'], weights['b4'], reuse, scope + '3')
-        hidden5 = conv_block(hidden4, weights['conv5'], weights['b5'], reuse, scope + '4')
-        hidden6 = conv_block(hidden5, weights['conv6'], weights['b6'], reuse, scope + '5')
-        hidden7 = conv_block(hidden6, weights['conv7'], weights['b7'], reuse, scope + '6')
-        if FLAGS.datasource == 'miniimagenet' or FLAGS.datasource == 'anomaly':
+        # ca_output1 = ca_block(hidden4, [weights['ca4_1'], weights['ca4_2']], [weights['c4_1'], weights['c4_2']])
+        # hidden5 = conv_block(ca_output1, weights['conv5'], weights['b5'], reuse, scope + '4')
+
+        if FLAGS.datasource == 'miniimagenet' or 'anomaly' in FLAGS.datasource:
             # last hidden layer is 6x6x64-ish, reshape to a vector
-            hidden7 = tf.reshape(hidden7, [-1, np.prod([int(dim) for dim in hidden7.get_shape()[1:]])])
+            hidden4 = tf.reshape(hidden4, [-1, np.prod([int(dim) for dim in hidden4.get_shape()[1:]])])
         else:
             hidden4 = tf.reduce_mean(hidden4, [1, 2])
 
-        return tf.matmul(hidden7, weights['w8']) + weights['b8']
+        ca_output1 = ca_block(hidden4, [weights['ca_1'], weights['ca_2']], [weights['c_1'], weights['c_2']])
+
+        return tf.matmul(ca_output1, weights['w5']) + weights['b5']
 
 
